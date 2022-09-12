@@ -1,0 +1,131 @@
+#!/sbin/sh
+#
+# Logical Partitions R/W Tool by afaneh92.
+
+DEBUG=true
+OUTFD=$2
+
+scr_wdth=50
+
+# Detect real $OUTFD
+#
+if readlink /proc/$$/fd/$OUTFD 2>/dev/null | grep /tmp >/dev/null; then
+  OUTFD=0
+  for FD in $( ls /proc/$$/fd ); do
+    if readlink /proc/$$/fd/$FD 2>/dev/null | grep pipe >/dev/null; then
+      if ps | grep " 3 $FD " | grep -v grep >/dev/null; then
+	OUTFD=$FD
+	break
+      fi
+    fi
+  done
+fi
+
+ui_print() {
+  echo -ne "ui_print $1\n" >> /proc/self/fd/$OUTFD
+  echo -ne "ui_print\n" >> /proc/self/fd/$OUTFD
+}
+
+debug_print() {
+  [ "$DEBUG" = true ] && ui_print "$*"
+}
+
+print_full_bar() {
+  ui_print "$(printf '%*s\n' $scr_wdth | tr ' ' '=')"
+}
+
+print_justified() {
+  local str="$1"
+  local str_len=${#str}
+  local padding_len=$(( ($scr_wdth - $str_len - 2) / 2))
+  local ljust="$(printf '%*s' $padding_len)"
+  local rjust="$(printf '%*s' $(($padding_len + $str_len % 2)))"
+
+  ui_print "=$ljust$str$rjust="
+}
+
+abort() {
+  debug_print $1;
+  umount $TMP_DIR/$block_name-rw
+  rm -rf $TMP_DIR/$block_name-rw*
+  exit 1;
+}
+
+check_data_rw() {
+  DATARW=false
+  if grep ' /data ' /proc/mounts | grep -vq 'tmpfs'; then
+    # Test if data is writable
+    touch /data/.rw && rm /data/.rw && DATARW=true
+    $DATARW && [ -d /data/tmp ] || mkdir /data/tmp
+  fi
+}
+
+convert_rw() {
+  local dm_block_f2fs=$(df -t f2fs | grep "/$1" | cut -DF1)
+
+  if [ "$dm_block_f2fs" ]; then
+    $DATARW && TMP_DIR=/data/tmp || TMP_DIR=/tmp
+    block_name=${1%_root*}
+    local block_size_mb=$(du -sm /$1 | cut -f1)
+    local new_block_size_mb=`echo $block_size_mb \* $2 |bc`
+    local new_block_size_mb=${new_block_size_mb%.*}
+    uuid=$(toybox blkid $dm_block_f2fs | egrep '[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}' -o)
+    ui_print " - Create R/W $block_name image..."
+    truncate -s ${new_block_size_mb}M $TMP_DIR/$block_name-rw.img
+    make_f2fs -g android -O project_quota,extra_attr,inode_checksum,sb_checksum,compression,flexible_inline_xattr,verity,inode_crtime -U $uuid -f -l $block_name $TMP_DIR/$block_name-rw.img || abort " -     ...Creating $block_name-rw.img failed. Aborting";
+    mkdir -p $TMP_DIR/$block_name-rw
+    mount $TMP_DIR/$block_name-rw.img $TMP_DIR/$block_name-rw
+    ui_print " - Copy old R/O $block_name files to our new created..."
+    cp -a --preserve=all /$1/* $TMP_DIR/$block_name-rw || abort " -     ...Copying to $block_name-rw failed. Aborting";
+    umount /$1
+    umount $TMP_DIR/$block_name-rw
+    ui_print " - Checking $block_name image before flashing..."
+    fsck.f2fs -f $TMP_DIR/$block_name-rw.img || abort " -     ...fsck $block_name-rw.img failed. Aborting";
+    ui_print " - Dynamic partition resizing using lptools"
+    lptools resize $block_name $(wc -c < $TMP_DIR/$block_name-rw.img) || abort " -     ...Resizing $block_name failed. Aborting";
+    lptools unmap $block_name || abort " -     ...Unmapping $block_name failed. Aborting";
+    lptools map $block_name || abort " -     ...Mapping $block_name failed. Aborting";
+    ui_print " - Write our new R/W $block_name image, Please wait..."
+    dd if=$TMP_DIR/$block_name-rw.img of=/dev/block/bootdevice/by-name/$block_name
+    rm -rf $TMP_DIR/$block_name-rw*
+  fi
+}
+
+check_partition_rw() {
+  block_name=${1%_root*}
+  ui_print " "
+  ui_print " - Mounting /$block_name..."
+  mount /$1
+  mount -o remount,rw /$1
+  ui_print " - Checking if $block_name is writable..."
+  if dd if=/dev/zero of=/$1/test bs=1 count=1 2>/dev/null; then
+    ui_print " -     ...succeeded."
+    rm -f /$1/test
+  else
+    ui_print " -     ...$block_name is readonly, attempting to resize $block_name..."
+    ui_print " "
+    convert_rw $1 $2
+  fi
+  ui_print " - Unmounting /$block_name..."
+  umount /$1
+}
+
+ui_print " "
+print_full_bar
+print_justified "Logical Partitions R/W Tool v0.2 by afaneh92"
+print_justified "Thanks to marqwe as well"
+print_full_bar
+ui_print " "
+
+check_data_rw
+check_partition_rw vendor 1.6
+$DATARW && check_partition_rw system_root 1.4
+# odm, product and system_ext might blow the script/device with errors
+# I will keep them untouched
+# check_partition_rw odm 1.6
+# check_partition_rw product 1.6
+# check_partition_rw system_ext 1.6
+
+ui_print " "
+ui_print " - Finished."
+ui_print " "
