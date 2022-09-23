@@ -112,13 +112,13 @@ check_partition_rw() {
 
 ui_print " "
 print_full_bar
-print_justified "Logical Partitions R/W Tool v0.2 by afaneh92"
+print_justified "Logical Partitions R/W Tool v0.3 by afaneh92"
 print_justified "Thanks to marqwe as well"
 print_full_bar
 ui_print " "
 
 check_data_rw
-check_partition_rw vendor 1.6
+check_partition_rw vendor 1.7
 $DATARW && check_partition_rw system_root 1.4
 # odm, product and system_ext might blow the script/device with errors
 # I will keep them untouched
