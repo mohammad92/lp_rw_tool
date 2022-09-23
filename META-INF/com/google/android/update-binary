@@ -61,9 +61,19 @@ check_data_rw() {
 }
 
 convert_rw() {
+  local dm_block_ext4=$(df -t ext4 | grep "/$1" | cut -DF1)
   local dm_block_f2fs=$(df -t f2fs | grep "/$1" | cut -DF1)
 
-  if [ "$dm_block_f2fs" ]; then
+  if [ "$dm_block_ext4" ]; then
+    echo " - Unmounting /$block_name..."
+    umount /$1
+    echo " - Checking block partition before resizing..."
+    e2fsck -f $dm_block_ext4
+    echo " - Resizing the filesystem on $dm_block_ext4..."
+    resize2fs $dm_block_ext4
+    echo " - Make the partition R/W by unsharing its blocks..."
+    e2fsck -E unshare_blocks $dm_block_ext4
+  elif [ "$dm_block_f2fs" ]; then
     $DATARW && TMP_DIR=/data/tmp || TMP_DIR=/tmp
     block_name=${1%_root*}
     local block_size_mb=$(du -sm /$1 | cut -f1)
